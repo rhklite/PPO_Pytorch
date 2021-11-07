@@ -40,6 +40,7 @@ class MLPNetwork(nn.Module):
 class Agent():
     def __init__(self, env, actor, critic) -> None:
         self.env = env
+        self.obs = self.env.reset()
         self.actor = actor.to(device)
         self.critic = critic.to(device)
         self.gamma = 0.99
@@ -164,8 +165,7 @@ class Agent():
             isDone.append(done)
             logProbs.append(logp)
         nStep = 0
-        obs = self.env.reset()
-        # states.append(obs)
+        obs = self.obs
             
         while nStep < maxSteps:
             obs_tensor = torch.from_numpy(obs).float()
@@ -175,12 +175,9 @@ class Agent():
             nStep +=1
             to_buffer(obs, action, reward, done, logProb)
             if done:
-                # states.pop()
                 obs = self.env.reset()
-                # states.append(obs)
             obs = obs_
-        # states.pop()
-        
+        self.obs = obs
         return self.packTrajectory(states, actions, rewards, logProbs, isDone)
     
 def test(env, agent, iter, render=True, maxEpsStep = 5000):
@@ -225,9 +222,12 @@ def logReward(itr, rewards, isDone):
 
 @db.timer
 def main():
-    # env = gym.make('Breakout-ram-v0')
-    env=gym.make('LunarLander-v2')
-    env=gym.make('CartPole-v0')
+    env_name = "Breakout-ram-v0"
+    env_name = "CartPole-v1"
+    # env_name = "LunarLander-v2"
+    env = gym.make(env_name)
+    test_env = gym.make(env_name)
+    
     print(f"====================")
     db.printInfo(f"ENV = {env.unwrapped.spec.id}")
     db.printInfo(f"AS = {env.action_space.n}")
@@ -239,8 +239,8 @@ def main():
     agent = Agent(env, actor, critic)
 
     itr = 20000
-    n_steps = 1000 # nsteps to collect per iteration
-    batch_size = 50
+    n_steps = 20 # nsteps to collect per iteration
+    batch_size = 5
     fileName = None
     for i in range(itr):
         with torch.no_grad():
@@ -252,11 +252,11 @@ def main():
         if i % 50 == 0:
             print(f"\n")
             db.printInfo(f"training iter {i} {avgReward=:.3f}")
-            test(env, agent, 1, False)
+            test(test_env, agent, 1, False)
             fileName = savePolicy(env.unwrapped.spec.id, agent, file_name = fileName)
             db.printInfo(f"{fileName=}")
     db.printInfo(f"training iter{i}")
-    test(env, agent, 5)
+    test(test_env, agent, 5)
     
 if __name__ == '__main__':
     main()
