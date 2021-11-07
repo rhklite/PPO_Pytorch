@@ -1,0 +1,7 @@
+references/
+runs/*
+debug/
+playground.py
+*.pth
+*.pyc
+.vscode
