@@ -1,28 +1,68 @@
-from inspect import unwrap
+from datetime import datetime
+import time
+import random
+import numpy as np
+
 import torch
 from torch import nn
-from torch.distributions import Categorical
-from torch.nn.modules.activation import Softmax
+from torch.distributions import Categorical, Normal
+from torch.utils.tensorboard import SummaryWriter
 import gym
 
-import numpy as np
 import print_custom as db
-import time
-from datetime import datetime
-from collections import defaultdict
-from torch.utils.tensorboard import SummaryWriter
+
 tb_writer = SummaryWriter()
-import random
 
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 # device='cpu'
 def normalize(tensor):
     return (tensor - tensor.mean())/(tensor.std() + 1e-7)
 
+def test(env, agent, iter, render=True, maxEpsStep = 5000):
+
+    for _ in range(iter):
+        obs = env.reset()
+        epsReward = 0
+        
+        for step in range(maxEpsStep):
+            with torch.no_grad():
+                obs = torch.from_numpy(obs).float()
+                obs = obs.to(device)
+                action, _ = agent.sampleAction(obs)
+            action = env.action_space.sample()
+            if render:
+                env.render()
+            obs, reward, done, _ = env.step(action)
+            epsReward += reward
+            if done:
+                break
+        db.printInfo(f"{epsReward=}")
+
+def savePolicy(envName, agent, file_name=None):
+    if file_name is None:
+        file_name = f"{envName}_{datetime.now().strftime('%d%b%Y_%H%M%S')}"
+    torch.save(agent, file_name+'.pth')
+    return file_name
+
+def logReward(itr, rewards, isDone):
+    epsReward = 0
+    avgReward = list()
+
+    for r, d in zip(rewards, isDone):
+        epsReward +=r
+        if d:
+            avgReward.append(epsReward)
+            epsReward = 0
+    if avgReward == []: avgReward = [epsReward]
+    tb_writer.add_scalar("Reward", np.mean(avgReward), itr, time.time())
+    
+    return np.mean(avgReward)
+
 class MLPNetwork(nn.Module):
     def __init__(self, input_dim, output_dim, n_layers=1, n_hidden=64,
-                 activation=nn.Tanh):
+                 activation=nn.Tanh, discrete=True):
         super().__init__()
+        self.discrete = discrete
         self.build_mlp(input_dim, output_dim, n_layers, n_hidden, activation)
 
     def build_mlp(self, input_dim, output_dim, n_layers, n_hidden,
@@ -33,23 +73,37 @@ class MLPNetwork(nn.Module):
         layers.append(nn.Linear(n_hidden, output_dim))
         self.network = nn.Sequential(*layers)
 
-    def forward(self, input):
-        return self.network(input) 
+        if not self.discrete:
+            self.logstd = nn.Parameter(torch.randn(output_dim))
 
+    def forward(self, input):
+        if self.discrete:
+            return self.network(input) 
+        else:
+            mean = self.network(input)
+            logstd = self.logstd
+            return mean, logstd
 
 class Agent():
     def __init__(self, env, actor, critic) -> None:
+        
+        # env stuff
         self.env = env
         self.obs = self.env.reset()
-        self.actor = actor.to(device)
-        self.critic = critic.to(device)
+        self.is_discrete = isinstance(env.action_space, gym.spaces.Discrete)
+        
+        # hyper params
         self.gamma = 0.99
-
         self.k_epochs = 4
         self.eps_clip = 0.2
 
         self.betas = (0.9, 0.999)
         self.lr = 0.002
+
+        # networks
+        self.actor = actor.to(device)
+        self.critic = critic.to(device)
+
         self.actor_optimizer = torch.optim.Adam(
             self.actor.parameters(),
             lr=self.lr,
@@ -91,19 +145,28 @@ class Agent():
     
     def getValue(self, observation):
         return self.critic(observation)
-
-    def getLogProb(self, observation, action, entropy=False):
-        dist = Categorical(logits=self.actor(observation))
-        if entropy:
-            return dist.log_prob(action), dist.entropy()
-        return dist.log_prob(action)
+    
+    def getEntropy(self, dist):
+        if self.is_discrete:
+            return dist.entropy()
+        else:
+            return dist.entropy().sum(-1)
+        
+    def getLogProb(self, action, dist):
+        if self.is_discrete:
+            return dist.log_prob(action)
+        else:
+            return dist.log_prob(action).sum(-1)
 
     def sampleAction(self, observation):
-        dist = Categorical(logits=self.actor(observation))
+        if self.is_discrete:
+            dist = Categorical(logits=self.actor(observation))
+        else:
+            mean, logstd = self.actor(observation)
+            dist = Normal(loc=mean, scale=logstd.exp())
         action = dist.sample()
-        return action.item(), dist.log_prob(action)
+        return action.to('cpu').numpy(), dist
 
-    
     def dataIterator(self, traj, returns, batch_size):
         n_samples = len(traj['states'])        
         idx = np.arange(0, n_samples, batch_size)
@@ -117,27 +180,27 @@ class Agent():
 
     def updateParams(self, disReturn, traj, iteration, batch_size):
         
-        for epoch in range(self.k_epochs):
+        for _ in range(self.k_epochs):
 
             for n in self.dataIterator(traj, disReturn, batch_size):    
                 old_states, old_actions, old_logProbs, returns, = n
 
-                
-                # stateVals = self.getValue(traj['states'])
                 stateVals = self.getValue(old_states)
 
                 stateVals = stateVals.squeeze()
                 with torch.no_grad():
                     adv = self.computeAdvantage(returns, stateVals, norm=True)
 
-                # logProb, entropy = self.getLogProb(traj['states'], traj['actions'], entropy=True)
-                # ratio = torch.exp(logProb - traj['logProbs'])
-                logProb, entropy = self.getLogProb(old_states, old_actions, entropy=True)
+                # mean, logstd = self.actor(old_states)
+                _, dist = self.sampleAction(old_states)
+                logProb = self.getLogProb(old_actions, dist)
+                entropy = self.getEntropy(dist)
+
                 ratio = torch.exp(logProb - old_logProbs)
 
                 surr1 = ratio*adv
                 surr2 = torch.clamp(ratio, 1-self.eps_clip, 1+self.eps_clip)*adv
-                actor_loss = -torch.min(surr1, surr2) - 0.005*entropy
+                actor_loss = -torch.min(surr1, surr2) - 0.01*entropy
 
                 loss = nn.MSELoss()
                 critic_loss = loss(stateVals, returns)
@@ -153,7 +216,7 @@ class Agent():
         tb_writer.add_scalar("ActorLoss/train", actor_loss.mean(), iteration, time.time())
         tb_writer.add_scalar("CriticLoss/train", critic_loss.mean(), iteration, time.time())
 
-    def sampleTrajectory(self, maxSteps)-> dict:
+    def sampleTrajectory(self, maxSteps, continue_from_last=False)-> dict:
         
         states, actions, rewards, isDone, logProbs = \
             list(), list(), list(), list(), list()
@@ -165,12 +228,21 @@ class Agent():
             isDone.append(done)
             logProbs.append(logp)
         nStep = 0
-        obs = self.obs
+        
+        if continue_from_last:
+            obs = self.obs
+        else:
+            obs = self.env.reset()
             
         while nStep < maxSteps:
             obs_tensor = torch.from_numpy(obs).float()
             obs_tensor = obs_tensor.to(device)
-            action, logProb = self.sampleAction(obs_tensor)
+            action, dist = self.sampleAction(obs_tensor)
+
+            ac = torch.tensor(action).float()
+            ac = ac.to(device)
+            logProb = self.getLogProb(ac, dist)
+
             obs_, reward, done, _ = self.env.step(action)
             nStep +=1
             to_buffer(obs, action, reward, done, logProb)
@@ -180,76 +252,52 @@ class Agent():
         self.obs = obs
         return self.packTrajectory(states, actions, rewards, logProbs, isDone)
     
-def test(env, agent, iter, render=True, maxEpsStep = 5000):
-
-    for _ in range(iter):
-        obs = env.reset()
-        epsReward = 0
-        act = defaultdict(int)
-        for step in range(maxEpsStep):
-            with torch.no_grad():
-                obs = torch.from_numpy(obs).float()
-                obs = obs.to(device)
-                action, _ = agent.sampleAction(obs)
-            act[action] +=1
-            if render:
-                env.render()
-            obs, reward, done, _ = env.step(action)
-            epsReward += reward
-            if done:
-                break
-        db.printInfo(f"{epsReward=} {act=}")
-
-def savePolicy(envName, agent, file_name=None):
-    if file_name is None:
-        file_name = f"{envName}_{datetime.now().strftime('%d%b%Y_%H%M%S')}"
-    torch.save(agent, file_name+'.pth')
-    return file_name
-
-def logReward(itr, rewards, isDone):
-    epsReward = 0
-    avgReward = list()
-
-    for r, d in zip(rewards, isDone):
-        epsReward +=r
-        if d:
-            avgReward.append(epsReward)
-            epsReward = 0
-    if avgReward == []: avgReward = [epsReward]
-    tb_writer.add_scalar("Reward", np.mean(avgReward), itr, time.time())
-    
-    return np.mean(avgReward)
-
 @db.timer
 def main():
-    env_name = "Breakout-ram-v0"
-    env_name = "CartPole-v1"
+    # env_name = 'Reacher-v2'
+    # env_name = "CartPole-v1"
     # env_name = "LunarLander-v2"
+    # env_name = "InvertedPendulum-v2"
+    # env_name = "LunarLanderContinuous-v2"
+    # env_name= "Hopper-v3"
+    env_name = "BipedalWalker-v3"
+    # env_name = "HalfCheetah-v3"
+
     env = gym.make(env_name)
     test_env = gym.make(env_name)
     
+    obs_dim = env.observation_space.shape[0]
+    isDiscrete = isinstance(env.action_space, gym.spaces.Discrete)
+    if isDiscrete:
+        action_dim = env.action_space.n
+    else:
+        action_dim = env.action_space.shape[0]
+
     print(f"====================")
     db.printInfo(f"ENV = {env.unwrapped.spec.id}")
-    db.printInfo(f"AS = {env.action_space.n}")
+    db.printInfo(f"OBS = {obs_dim}")
+    db.printInfo(f"AS = {action_dim}")
+    db.printInfo(f"Discrete: {isDiscrete}")
     print(f"====================")
-    actor = MLPNetwork(input_dim = env.observation_space.shape[0], 
-                       output_dim = env.action_space.n, n_layers=1, n_hidden=64)
-    critic = MLPNetwork(env.observation_space.shape[0], 1, n_layers=1, n_hidden=64)
+    actor = MLPNetwork(obs_dim, action_dim,
+                       n_layers=2, n_hidden=32, discrete=isDiscrete)
+    critic = MLPNetwork(obs_dim, 1,
+                        n_layers=2, n_hidden=32)
 
     agent = Agent(env, actor, critic)
 
     itr = 20000
-    n_steps = 20 # nsteps to collect per iteration
-    batch_size = 5
+    n_steps = 40000 # nsteps to collect per iteration
+    batch_size = 20000
     fileName = None
     for i in range(itr):
         with torch.no_grad():
-            traj = agent.sampleTrajectory(n_steps)
+            traj = agent.sampleTrajectory(n_steps, continue_from_last=False)
             avgReward = logReward(i, traj['rewards'], traj['isDone'])
         returns = agent.computeReturns(traj['rewards'], traj["isDone"], norm=True)
         agent.updateParams(returns, traj, i, batch_size)
 
-        if i % 50 == 0:
+        if i % 10 == 0:
             print(f"\n")
             db.printInfo(f"training iter {i} {avgReward=:.3f}")
             test(test_env, agent, 1, False)
