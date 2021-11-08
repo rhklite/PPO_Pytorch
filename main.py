@@ -6,16 +6,12 @@ import gym
 import torch
 from torch import nn
 from torch.distributions import Categorical, Normal
-from torch.utils.tensorboard import SummaryWriter
 
 import print_custom as db
 import training_args
 from logger import *
 
-tb_writer = SummaryWriter()
 
-device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-# device='cpu'
 def normalize(tensor):
     return (tensor - tensor.mean())/(tensor.std() + 1e-7)
 
@@ -30,7 +26,6 @@ def test(env, agent, iter, render=True, maxEpsStep = 5000):
                 obs = torch.from_numpy(obs).float()
                 obs = obs.to(device)
                 action, _ = agent.sampleAction(obs)
-            action = env.action_space.sample()
             if render:
                 env.render()
             obs, reward, done, _ = env.step(action)
@@ -208,7 +203,7 @@ class Agent():
         tb_writer.add_scalar("ActorLoss/train", actor_loss.mean(), iteration, time.time())
         tb_writer.add_scalar("CriticLoss/train", critic_loss.mean(), iteration, time.time())
 
-    def sampleTrajectory(self, maxSteps, continue_from_last=False)-> dict:
+    def sampleTrajectory(self, eps_length, traj_size, continue_from_last=False)-> dict:
         
         states, actions, rewards, isDone, logProbs = \
             list(), list(), list(), list(), list()
@@ -221,12 +216,13 @@ class Agent():
             logProbs.append(logp)
         nStep = 0
         
+        eps_step = 0
         if continue_from_last:
             obs = self.obs
         else:
             obs = self.env.reset()
-            
-        while nStep < maxSteps:
+
+        while nStep < traj_size:
             obs_tensor = torch.from_numpy(obs).float()
             obs_tensor = obs_tensor.to(device)
             action, dist = self.sampleAction(obs_tensor)
@@ -237,8 +233,13 @@ class Agent():
 
             obs_, reward, done, _ = self.env.step(action)
             nStep +=1
+            eps_step+=1
+            if eps_step >= eps_length:
+                done = True
             to_buffer(obs, action, reward, done, logProb)
+            # 
             if done:
+                eps_step = 0
                 obs = self.env.reset()
             obs = obs_
         self.obs = obs
@@ -270,10 +271,9 @@ def main(args):
                         discrete=True)
     agent = Agent(env, actor, critic, args)
 
-    fileName = None
     for i in range(args.n_iter):
         with torch.no_grad():
-            traj = agent.sampleTrajectory(args.n_steps, continue_from_last=args.continue_env)
+            traj = agent.sampleTrajectory(args.eps_length, args.n_steps, continue_from_last=args.continue_env)
             avgReward = logReward(i, traj['rewards'], traj['isDone'])
         returns = agent.computeReturns(traj['rewards'], traj["isDone"], norm=True)
         agent.updateParams(returns, traj, i, args.batch_size)
@@ -281,13 +281,15 @@ def main(args):
         if i % 10 == 0:
             print(f"\n")
             db.printInfo(f"training iter {i} {avgReward=:.3f}")
-            test(test_env, agent, 1, False)
-            fileName = savePolicy(env.unwrapped.spec.id, agent, file_name = fileName)
-            db.printInfo(f"{fileName=}")
+            test(test_env, agent, 1, False, args.eps_length)
+            savePolicy(env.unwrapped.spec.id, agent)
+            db.printInfo(f"{G.output_dir=}")
     db.printInfo(f"training iter{i}")
-    test(test_env, agent, 5)
+    test(test_env, agent, 5, args.eps_length)
     
 if __name__ == '__main__':
     args = training_args.get_args()
-    setup_logger(args)
+    tb_writer = setup_logger(args)
+    global device
+    device = args.device
     main(args)

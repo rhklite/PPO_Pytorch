@@ -1,11 +1,12 @@
 import torch
 from torch.distributions import Categorical
-from gym_api import Agent
-from gym_api import MLPNetwork
+from main import Agent
+from main import MLPNetwork
 import argparse
 import print_custom as db
 
 device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
+device='cpu'
 def loadFile(filepath):
     return torch.load(filepath)
 

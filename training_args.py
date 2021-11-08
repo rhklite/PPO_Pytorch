@@ -1,12 +1,16 @@
 import argparse
 import json
 
+import torch
+
 def get_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument('--env_name', '-env', type=str, default='CartPole-v1')
     parser.add_argument('--exp_name', type=str, default=None)
     parser.add_argument('--n_layers', '-l', type=int, default=1)
     parser.add_argument('--n_hidden', '-nh', type=int, default=64)
+    parser.add_argument('--eps_length', '-el', type=int, default=float('inf'),
+        help="maximum length of the episode")
     parser.add_argument('--n_iter', '-n', type=int, default=100,
         help="number of training iterations to run")
     parser.add_argument('--n_steps', '-s', type=int, default=1000,
@@ -21,12 +25,12 @@ def get_parser():
         help="clip value")
     parser.add_argument('--learning_rate', '-lr', type=float, default=5e-3,
         help="optimizer learning rate")
-    parser.add_argument('--continue_env', '-rtg', action='store_true', default=True,
+    parser.add_argument('--continue_env', '-rtg', action='store_true', default=False,
         help="Don't reset the environment between trajectories")
-    parser.add_argument('--dir', '-d', type=str, default='training/')
+    parser.add_argument('--dir', '-d', type=str, default='exp/')
     parser.add_argument('--load_json',
     help='Load settings from file in json format. Command line options override values in file.')
-
+    parser.add_argument('--device', '-dev', default='cuda:0' if torch.cuda.is_available() else 'cpu')
     return parser
 
 def get_args():
@@ -38,6 +42,7 @@ def get_args():
             t_args = argparse.Namespace()
             t_args.__dict__.update(json.load(f))
             args = parser.parse_args(namespace=t_args)
+    
     return args
     # env_name = 'Reacher-v2'
     # env_name = "CartPole-v1"

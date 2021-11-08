@@ -5,3 +5,5 @@ playground.py
 *.pth
 *.pyc
 .vscode
+training/
+exp/
