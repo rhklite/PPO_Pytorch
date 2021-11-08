@@ -1,0 +1,16 @@
+{
+    "env_name": "CartPole-v1",
+    "exp_name": null,
+    "n_layers": 1,
+    "n_hidden": 64,
+    "n_iter": 100,
+    "n_steps": 1000,
+    "batch_size": 1000,
+    "discount": 0.99,
+    "k_epochs": 4,
+    "clip": 0.2,
+    "learning_rate": 0.005,
+    "continue_env": true,
+    "dir": "training/",
+    "load_json": "training/CartPole-v1_08Nov2021_015329/hyperparameters.json"
+}

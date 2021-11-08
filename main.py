@@ -1,15 +1,16 @@
-from datetime import datetime
 import time
 import random
 import numpy as np
 
+import gym
 import torch
 from torch import nn
 from torch.distributions import Categorical, Normal
 from torch.utils.tensorboard import SummaryWriter
-import gym
 
 import print_custom as db
+import training_args
+from logger import *
 
 tb_writer = SummaryWriter()
 
@@ -38,12 +39,6 @@ def test(env, agent, iter, render=True, maxEpsStep = 5000):
                 break
         db.printInfo(f"{epsReward=}")
 
-def savePolicy(envName, agent, file_name=None):
-    if file_name is None:
-        file_name = f"{envName}_{datetime.now().strftime('%d%b%Y_%H%M%S')}"
-    torch.save(agent, file_name+'.pth')
-    return file_name
-
 def logReward(itr, rewards, isDone):
     epsReward = 0
     avgReward = list()
@@ -57,6 +52,7 @@ def logReward(itr, rewards, isDone):
     tb_writer.add_scalar("Reward", np.mean(avgReward), itr, time.time())
     
     return np.mean(avgReward)
+
 
 class MLPNetwork(nn.Module):
     def __init__(self, input_dim, output_dim, n_layers=1, n_hidden=64,
@@ -85,7 +81,7 @@ class MLPNetwork(nn.Module):
             return mean, logstd
 
 class Agent():
-    def __init__(self, env, actor, critic) -> None:
+    def __init__(self, env, actor, critic, training_args) -> None:
         
         # env stuff
         self.env = env
@@ -93,12 +89,10 @@ class Agent():
         self.is_discrete = isinstance(env.action_space, gym.spaces.Discrete)
         
         # hyper params
-        self.gamma = 0.99
-        self.k_epochs = 4
-        self.eps_clip = 0.2
-
-        self.betas = (0.9, 0.999)
-        self.lr = 0.002
+        self.discount = training_args.discount
+        self.k_epochs = training_args.k_epochs
+        self.eps_clip = training_args.clip
+        self.lr = training_args.learning_rate
 
         # networks
         self.actor = actor.to(device)
@@ -107,13 +101,11 @@ class Agent():
         self.actor_optimizer = torch.optim.Adam(
             self.actor.parameters(),
             lr=self.lr,
-            betas = self.betas
         )
 
         self.critic_optimizer = torch.optim.Adam(
             self.critic.parameters(),
-            lr=self.lr,
-            betas = self.betas
+            lr=self.lr
         )
 
     def packTrajectory(self, states, actions, rewards, logProbs, isDone):
@@ -131,7 +123,7 @@ class Agent():
         
         for rwd, done in zip(rewards[::-1], isDone[::-1]):
 
-            disReturn = self.gamma*disReturn* (1-done) + rwd
+            disReturn = self.discount*disReturn* (1-done) + rwd
             returns.insert(0, disReturn)
             
         returns = torch.tensor(returns).float()
@@ -253,18 +245,9 @@ class Agent():
         return self.packTrajectory(states, actions, rewards, logProbs, isDone)
     
 @db.timer
-def main():
-    # env_name = 'Reacher-v2'
-    # env_name = "CartPole-v1"
-    # env_name = "LunarLander-v2"
-    # env_name = "InvertedPendulum-v2"
-    # env_name = "LunarLanderContinuous-v2"
-    # env_name= "Hopper-v3"
-    env_name = "BipedalWalker-v3"
-    # env_name = "HalfCheetah-v3"
-
-    env = gym.make(env_name)
-    test_env = gym.make(env_name)
+def main(args):
+    env = gym.make(args.env_name)
+    test_env = gym.make(args.env_name)
     
     obs_dim = env.observation_space.shape[0]
     isDiscrete = isinstance(env.action_space, gym.spaces.Discrete)
@@ -280,22 +263,20 @@ def main():
     db.printInfo(f"Discrete: {isDiscrete}")
     print(f"====================")
     actor = MLPNetwork(obs_dim, action_dim,
-                       n_layers=2, n_hidden=32, discrete=isDiscrete)
+                       n_layers=args.n_layers, n_hidden=args.n_hidden,
+                       discrete=isDiscrete)
     critic = MLPNetwork(obs_dim, 1,
-                        n_layers=2, n_hidden=32)
+                        n_layers=args.n_layers, n_hidden=args.n_hidden,
+                        discrete=True)
+    agent = Agent(env, actor, critic, args)
 
-    agent = Agent(env, actor, critic)
-
-    itr = 20000
-    n_steps = 40000 # nsteps to collect per iteration
-    batch_size = 20000
     fileName = None
-    for i in range(itr):
+    for i in range(args.n_iter):
         with torch.no_grad():
-            traj = agent.sampleTrajectory(n_steps, continue_from_last=False)
+            traj = agent.sampleTrajectory(args.n_steps, continue_from_last=args.continue_env)
             avgReward = logReward(i, traj['rewards'], traj['isDone'])
         returns = agent.computeReturns(traj['rewards'], traj["isDone"], norm=True)
-        agent.updateParams(returns, traj, i, batch_size)
+        agent.updateParams(returns, traj, i, args.batch_size)
 
         if i % 10 == 0:
             print(f"\n")
@@ -307,4 +288,6 @@ def main():
     test(test_env, agent, 5)
     
 if __name__ == '__main__':
-    main()
+    args = training_args.get_args()
+    setup_logger(args)
+    main(args)

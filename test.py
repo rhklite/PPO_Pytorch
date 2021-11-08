@@ -28,7 +28,6 @@ def runEpisode(agent, render=True):
         if done:
             return epsRwd    
 
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('filepath', type=str)
