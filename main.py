@@ -289,6 +289,7 @@ def main(args):
     db.printInfo(f"OBS = {obs_dim}")
     db.printInfo(f"AS = {action_dim}")
     db.printInfo(f"Discrete: {isDiscrete}")
+    db.printInfo(f"Device: {device}")
     print(f"====================")
     actor = MLPNetwork(*obs_dim, action_dim,
                        n_layers=args.n_layers, n_hidden=args.n_hidden,
