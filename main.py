@@ -1,11 +1,16 @@
 import time
 import random
+from typing import Sequence
 import numpy as np
 
 import gym
 import torch
 from torch import nn
 from torch.distributions import Categorical, Normal
+from torch.nn.modules import batchnorm
+from torch.nn.modules.activation import ReLU
+from torch.nn.modules.conv import Conv2d
+from torch.nn.modules.linear import Linear
 
 import print_custom as db
 import training_args
@@ -16,7 +21,6 @@ def normalize(tensor):
     return (tensor - tensor.mean())/(tensor.std() + 1e-7)
 
 def test(env, agent, iter, render=True, maxEpsStep = 5000):
-
     for _ in range(iter):
         obs = env.reset()
         epsReward = 0
@@ -75,6 +79,27 @@ class MLPNetwork(nn.Module):
             logstd = self.logstd
             return mean, logstd
 
+class ConvNetwork(nn.Module):
+    def __init__(self, height, width, channel, output_dim, discrete=True):
+        super().__init__()
+        db.printInfo(f"{height=} {width=} {channel=}")
+        self.network = nn.Sequential(
+            nn.Conv2d(channel, 16, kernel_size=3, stride=1),
+            nn.BatchNorm2d(16),
+            nn.ReLU(),
+            nn.Conv2d(16, 32, kernel_size=3, stride=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            nn.Conv2d(32, 32, kernel_size=3, stride=1),
+            nn.BatchNorm2d(32)
+        )
+
+        if discrete:
+            self.logstd = nn.Parameter(torch.randn(output_dim))
+
+    def forward(self, input):
+        return self.network(input)
+
 class Agent():
     def __init__(self, env, actor, critic, training_args) -> None:
         
@@ -88,10 +113,11 @@ class Agent():
         self.k_epochs = training_args.k_epochs
         self.eps_clip = training_args.clip
         self.lr = training_args.learning_rate
+        self.device = training_args.device
 
         # networks
-        self.actor = actor.to(device)
-        self.critic = critic.to(device)
+        self.actor = actor.to(self.device)
+        self.critic = critic.to(self.device)
 
         self.actor_optimizer = torch.optim.Adam(
             self.actor.parameters(),
@@ -105,11 +131,11 @@ class Agent():
 
     def packTrajectory(self, states, actions, rewards, logProbs, isDone):
         
-        trajectory = {"states": torch.stack([torch.from_numpy(s).float() for s in states]).to(device),
-                      "actions": torch.stack([torch.tensor(a).float() for a in actions]).to(device),
+        trajectory = {"states": torch.stack([torch.from_numpy(s).float() for s in states]).to(self.device),
+                      "actions": torch.stack([torch.tensor(a).float() for a in actions]).to(self.device),
                       "rewards": rewards,
                       "isDone": isDone,
-                      "logProbs": torch.tensor(logProbs).float().to(device)}
+                      "logProbs": torch.tensor(logProbs).float().to(self.device)}
         return trajectory
 
     def computeReturns(self, rewards, isDone, norm=False):
@@ -123,7 +149,7 @@ class Agent():
             
         returns = torch.tensor(returns).float()
         if norm: returns = normalize(returns)
-        return returns.to(device)
+        return returns.to(self.device)
           
     def computeAdvantage(self, returns, values, norm=False):
         advantage = returns - values
@@ -224,11 +250,11 @@ class Agent():
 
         while nStep < traj_size:
             obs_tensor = torch.from_numpy(obs).float()
-            obs_tensor = obs_tensor.to(device)
+            obs_tensor = obs_tensor.to(self.device)
             action, dist = self.sampleAction(obs_tensor)
 
             ac = torch.tensor(action).float()
-            ac = ac.to(device)
+            ac = ac.to(self.device)
             logProb = self.getLogProb(ac, dist)
 
             obs_, reward, done, _ = self.env.step(action)
@@ -250,7 +276,8 @@ def main(args):
     env = gym.make(args.env_name)
     test_env = gym.make(args.env_name)
     
-    obs_dim = env.observation_space.shape[0]
+    obs_dim = env.observation_space.shape
+    db.printInfo(f"{obs_dim}")
     isDiscrete = isinstance(env.action_space, gym.spaces.Discrete)
     if isDiscrete:
         action_dim = env.action_space.n
@@ -263,12 +290,13 @@ def main(args):
     db.printInfo(f"AS = {action_dim}")
     db.printInfo(f"Discrete: {isDiscrete}")
     print(f"====================")
-    actor = MLPNetwork(obs_dim, action_dim,
+    actor = MLPNetwork(*obs_dim, action_dim,
                        n_layers=args.n_layers, n_hidden=args.n_hidden,
                        discrete=isDiscrete)
-    critic = MLPNetwork(obs_dim, 1,
+    critic = MLPNetwork(*obs_dim, 1,
                         n_layers=args.n_layers, n_hidden=args.n_hidden,
                         discrete=True)
+
     agent = Agent(env, actor, critic, args)
 
     for i in range(args.n_iter):

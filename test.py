@@ -35,7 +35,7 @@ def main():
     args = parser.parse_args()
 
     trials=5
-    agent = torch.load(args.filepath)
+    agent = torch.load(args.filepath, map_location='cpu')
     avgRwd = 0
     for eps in range(trials):
         epsRwd = runEpisode(agent)

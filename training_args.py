@@ -5,11 +5,11 @@ import torch
 
 def get_parser():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--env_name', '-env', type=str, default='CartPole-v1')
+    parser.add_argument('--env_name', '-env', type=str, default='CarRacing-v0')
     parser.add_argument('--exp_name', type=str, default=None)
     parser.add_argument('--n_layers', '-l', type=int, default=1)
     parser.add_argument('--n_hidden', '-nh', type=int, default=64)
-    parser.add_argument('--eps_length', '-el', type=int, default=float('inf'),
+    parser.add_argument('--eps_length', '-el', type=int, default=100000,
         help="maximum length of the episode")
     parser.add_argument('--n_iter', '-n', type=int, default=100,
         help="number of training iterations to run")
