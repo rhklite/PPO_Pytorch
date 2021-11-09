@@ -1,16 +1,12 @@
 import time
 import random
-from typing import Sequence
-import numpy as np
 
 import gym
 import torch
 from torch import nn
 from torch.distributions import Categorical, Normal
-from torch.nn.modules import batchnorm
-from torch.nn.modules.activation import ReLU
-from torch.nn.modules.conv import Conv2d
-from torch.nn.modules.linear import Linear
+import numpy as np
+import matplotlib.pyplot as plt
 
 import print_custom as db
 import training_args
@@ -27,9 +23,10 @@ def test(env, agent, iter, render=True, maxEpsStep = 5000):
         
         for step in range(maxEpsStep):
             with torch.no_grad():
-                obs = torch.from_numpy(obs).float()
+                # obs = torch.from_numpy(obs).float().unsqueeze(0)
                 obs = obs.to(device)
-                action, _ = agent.sampleAction(obs)
+                
+                action, _ = agent.sampleAction(obs.unsqueeze(0))
             if render:
                 env.render()
             obs, reward, done, _ = env.step(action)
@@ -53,36 +50,42 @@ def logReward(itr, rewards, isDone):
     return np.mean(avgReward)
 
 
+
+def build_mlp(input_dim, output_dim, n_layers, n_hidden,
+                activation=nn.Tanh):
+    layers = [nn.Linear(input_dim,n_hidden), activation()]
+    for _ in range(n_layers):
+        layers += [nn.Linear(n_hidden, n_hidden), activation()]
+    layers.append(nn.Linear(n_hidden, output_dim))
+    return nn.Sequential(*layers)
+
+class ImgObsWrapper(gym.ObservationWrapper):
+    def __init__(self, env) -> None:
+        super().__init__(env)
+        
+    def observation(self, obs):
+        return torch.tensor(obs.copy()).float().permute(2, 0, 1)
+
 class MLPNetwork(nn.Module):
     def __init__(self, input_dim, output_dim, n_layers=1, n_hidden=64,
                  activation=nn.Tanh, discrete=True):
         super().__init__()
         self.discrete = discrete
-        self.build_mlp(input_dim, output_dim, n_layers, n_hidden, activation)
-
-    def build_mlp(self, input_dim, output_dim, n_layers, n_hidden,
-                  activation=nn.Tanh):
-        layers = [nn.Linear(input_dim,n_hidden), activation()]
-        for _ in range(n_layers):
-            layers += [nn.Linear(n_hidden, n_hidden), activation()]
-        layers.append(nn.Linear(n_hidden, output_dim))
-        self.network = nn.Sequential(*layers)
-
+        self.network = build_mlp(input_dim, output_dim, n_layers, n_hidden, activation)
         if not self.discrete:
             self.logstd = nn.Parameter(torch.randn(output_dim))
 
     def forward(self, input):
+        logit = self.network(input) 
         if self.discrete:
-            return self.network(input) 
+            return logit
         else:
-            mean = self.network(input)
             logstd = self.logstd
-            return mean, logstd
+            return logit, logstd
 
 class ConvNetwork(nn.Module):
     def __init__(self, height, width, channel, output_dim, discrete=True):
         super().__init__()
-        db.printInfo(f"{height=} {width=} {channel=}")
         self.network = nn.Sequential(
             nn.Conv2d(channel, 16, kernel_size=3, stride=1),
             nn.BatchNorm2d(16),
@@ -91,14 +94,37 @@ class ConvNetwork(nn.Module):
             nn.BatchNorm2d(32),
             nn.ReLU(),
             nn.Conv2d(32, 32, kernel_size=3, stride=1),
-            nn.BatchNorm2d(32)
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            nn.Conv2d(32, 16, kernel_size=3, stride=1),
+            nn.BatchNorm2d(16),
+            nn.ReLU(),
+            nn.Conv2d(16, 4, kernel_size=3, stride=1),
+            nn.BatchNorm2d(4)
         )
+        test_tensor = torch.randn(1, channel, height, width)
+        with torch.no_grad():
+            test_tensor = self.network(test_tensor).view(-1)
 
-        if discrete:
+        self.mlp = build_mlp(test_tensor.shape[0], output_dim, 2, 64)
+        
+        
+        self.discrete = discrete
+        if not self.discrete:
             self.logstd = nn.Parameter(torch.randn(output_dim))
 
     def forward(self, input):
-        return self.network(input)
+        x = self.network(input)
+        logit = self.mlp(x.view(input.shape[0], -1))
+
+        if self.discrete:
+            return logit
+        else:
+            logstd = self.logstd
+            return logit, logstd
+
+        return 
+
 
 class Agent():
     def __init__(self, env, actor, critic, training_args) -> None:
@@ -131,11 +157,19 @@ class Agent():
 
     def packTrajectory(self, states, actions, rewards, logProbs, isDone):
         
-        trajectory = {"states": torch.stack([torch.from_numpy(s).float() for s in states]).to(self.device),
+        # trajectory = {"states": torch.stack([torch.from_numpy(s).float() for s in states]).to(self.device),
+        #               "actions": torch.stack([torch.tensor(a).float() for a in actions]).to(self.device),
+        #               "rewards": rewards,
+        #               "isDone": isDone,
+        #               "logProbs": torch.tensor(logProbs).float().to(self.device)}
+
+        trajectory = {"states": torch.stack(states).float().to(self.device),
                       "actions": torch.stack([torch.tensor(a).float() for a in actions]).to(self.device),
                       "rewards": rewards,
                       "isDone": isDone,
-                      "logProbs": torch.tensor(logProbs).float().to(self.device)}
+                      "logProbs": torch.stack(logProbs).float().to(self.device)}
+        
+
         return trajectory
 
     def computeReturns(self, rewards, isDone, norm=False):
@@ -177,8 +211,8 @@ class Agent():
         else:
             mean, logstd = self.actor(observation)
             dist = Normal(loc=mean, scale=logstd.exp())
-        action = dist.sample()
-        return action.to('cpu').numpy(), dist
+        action = dist.sample().to('cpu').numpy()
+        return action[0], dist
 
     def dataIterator(self, traj, returns, batch_size):
         n_samples = len(traj['states'])        
@@ -249,10 +283,11 @@ class Agent():
             obs = self.env.reset()
 
         while nStep < traj_size:
-            obs_tensor = torch.from_numpy(obs).float()
-            obs_tensor = obs_tensor.to(self.device)
-            action, dist = self.sampleAction(obs_tensor)
+            # obs_tensor = torch.tensor(obs.copy()).float().unsqueeze(0)
+            # obs_tensor = obs_tensor.to(self.device)
 
+            obs = obs.to(self.device) 
+            action, dist = self.sampleAction(obs.unsqueeze(0))
             ac = torch.tensor(action).float()
             ac = ac.to(self.device)
             logProb = self.getLogProb(ac, dist)
@@ -273,8 +308,13 @@ class Agent():
     
 @db.timer
 def main(args):
-    env = gym.make(args.env_name)
+
+    env = gym.make(args.env_name) 
     test_env = gym.make(args.env_name)
+
+    if args.cnn:
+        env = ImgObsWrapper(env)
+        test_env = ImgObsWrapper(test_env)
     
     obs_dim = env.observation_space.shape
     db.printInfo(f"{obs_dim}")
@@ -290,13 +330,19 @@ def main(args):
     db.printInfo(f"AS = {action_dim}")
     db.printInfo(f"Discrete: {isDiscrete}")
     print(f"====================")
-    actor = MLPNetwork(*obs_dim, action_dim,
-                       n_layers=args.n_layers, n_hidden=args.n_hidden,
-                       discrete=isDiscrete)
-    critic = MLPNetwork(*obs_dim, 1,
-                        n_layers=args.n_layers, n_hidden=args.n_hidden,
-                        discrete=True)
 
+    if args.cnn:
+        actor = ConvNetwork(*obs_dim, action_dim, discrete=isDiscrete)
+        critic = ConvNetwork(*obs_dim, 1)
+    else:
+        actor = MLPNetwork(*obs_dim, action_dim,
+                        n_layers=args.n_layers, n_hidden=args.n_hidden,
+                        discrete=isDiscrete)
+        critic = MLPNetwork(*obs_dim, 1,
+                            n_layers=args.n_layers, n_hidden=args.n_hidden,
+                            discrete=True)
+        
+    
     agent = Agent(env, actor, critic, args)
 
     for i in range(args.n_iter):

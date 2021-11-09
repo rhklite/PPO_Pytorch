@@ -27,10 +27,11 @@ def get_parser():
         help="optimizer learning rate")
     parser.add_argument('--continue_env', '-rtg', action='store_true', default=False,
         help="Don't reset the environment between trajectories")
-    parser.add_argument('--dir', '-d', type=str, default='exp/')
+    parser.add_argument('--dir', '-d', type=str, default='tmp/')
     parser.add_argument('--load_json',
     help='Load settings from file in json format. Command line options override values in file.')
     parser.add_argument('--device', '-dev', default='cuda:0' if torch.cuda.is_available() else 'cpu')
+    parser.add_argument('--cnn', action='store_true')
     return parser
 
 def get_args():
