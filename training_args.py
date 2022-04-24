@@ -11,11 +11,11 @@ def get_parser():
     parser.add_argument('--n_hidden', '-nh', type=int, default=64)
     parser.add_argument('--eps_length', '-el', type=int, default=100000,
         help="maximum length of the episode")
-    parser.add_argument('--n_iter', '-n', type=int, default=100,
+    parser.add_argument('--n_iter', '-n', type=int, default=10000,
         help="number of training iterations to run")
-    parser.add_argument('--n_steps', '-s', type=int, default=1000,
+    parser.add_argument('--n_steps', '-s', type=int, default=256,
         help='number of steps to take per training iteration')
-    parser.add_argument('--batch_size', '-b', type=int, default=1000,
+    parser.add_argument('--batch_size', '-b', type=int, default=128,
         help='batch size')
     parser.add_argument('--discount', type=float, default=0.99,
         help="discounnt rate for the return")
@@ -25,13 +25,13 @@ def get_parser():
         help="clip value")
     parser.add_argument('--learning_rate', '-lr', type=float, default=5e-3,
         help="optimizer learning rate")
-    parser.add_argument('--continue_env', '-rtg', action='store_true', default=False,
+    parser.add_argument('--continue_env', '-rtg', action='store_true', default=True,
         help="Don't reset the environment between trajectories")
     parser.add_argument('--dir', '-d', type=str, default='tmp/')
     parser.add_argument('--load_json',
     help='Load settings from file in json format. Command line options override values in file.')
     parser.add_argument('--device', '-dev', default='cuda:0' if torch.cuda.is_available() else 'cpu')
-    parser.add_argument('--cnn', action='store_true')
+    parser.add_argument('--cnn', default=True, action='store_true')
     return parser
 
 def get_args():

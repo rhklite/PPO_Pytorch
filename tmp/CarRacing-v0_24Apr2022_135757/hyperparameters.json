@@ -1,0 +1,19 @@
+{
+    "env_name": "CarRacing-v0",
+    "exp_name": null,
+    "n_layers": 1,
+    "n_hidden": 64,
+    "eps_length": 100000,
+    "n_iter": 10000,
+    "n_steps": 256,
+    "batch_size": 128,
+    "discount": 0.99,
+    "k_epochs": 4,
+    "clip": 0.2,
+    "learning_rate": 0.005,
+    "continue_env": true,
+    "dir": "tmp/",
+    "load_json": null,
+    "device": "cuda:0",
+    "cnn": true
+}

@@ -12,7 +12,14 @@ import print_custom as db
 import training_args
 from logger import *
 
+    
 
+def weights_init(m):
+    if isinstance(m, nn.Conv2d):
+        if hasattr(m, 'weight'):
+            torch.nn.init.xavier_uniform_(m.weight) 
+        m.bias.data.fill_(0)
+        
 def normalize(tensor):
     return (tensor - tensor.mean())/(tensor.std() + 1e-7)
 
@@ -64,7 +71,7 @@ class ImgObsWrapper(gym.ObservationWrapper):
         super().__init__(env)
         
     def observation(self, obs):
-        return torch.tensor(obs.copy()).float().permute(2, 0, 1)
+        return torch.tensor(obs.copy()).float().permute(0, 3, 1, 2)
 
 class MLPNetwork(nn.Module):
     def __init__(self, input_dim, output_dim, n_layers=1, n_hidden=64,
@@ -87,21 +94,29 @@ class ConvNetwork(nn.Module):
     def __init__(self, height, width, channel, output_dim, discrete=True):
         super().__init__()
         self.network = nn.Sequential(
-            nn.Conv2d(channel, 16, kernel_size=3, stride=1),
-            nn.BatchNorm2d(16),
+            nn.Conv2d(channel, 8, kernel_size=3, stride=1),
+            nn.BatchNorm2d(8),
             nn.ReLU(),
-            nn.Conv2d(16, 32, kernel_size=3, stride=1),
-            nn.BatchNorm2d(32),
+            nn.Conv2d(8, 4, kernel_size=3, stride=1),
+            nn.BatchNorm2d(4),
             nn.ReLU(),
-            nn.Conv2d(32, 32, kernel_size=3, stride=1),
-            nn.BatchNorm2d(32),
+            nn.Conv2d(4, 2, kernel_size=3, stride=1),
+            nn.BatchNorm2d(2),
             nn.ReLU(),
-            nn.Conv2d(32, 16, kernel_size=3, stride=1),
-            nn.BatchNorm2d(16),
+            nn.Conv2d(2, 1, kernel_size=3, stride=1),
+            nn.BatchNorm2d(1),
             nn.ReLU(),
-            nn.Conv2d(16, 4, kernel_size=3, stride=1),
-            nn.BatchNorm2d(4)
+            nn.Conv2d(1, 2, kernel_size=3, stride=1),
+            nn.BatchNorm2d(2),
+            nn.Conv2d(2, 4, kernel_size=3, stride=1),
+            nn.BatchNorm2d(4),
+            nn.ReLU(),
+            nn.Conv2d(4, 8, kernel_size=3, stride=1),
+            nn.BatchNorm2d(8),
+            nn.ReLU(),
         )
+        self.network.apply(weights_init)
+        
         test_tensor = torch.randn(1, channel, height, width)
         with torch.no_grad():
             test_tensor = self.network(test_tensor).view(-1)
@@ -114,7 +129,11 @@ class ConvNetwork(nn.Module):
             self.logstd = nn.Parameter(torch.randn(output_dim))
 
     def forward(self, input):
-        x = self.network(input)
+        #  this plots the input img
+        # import matplotlib.pyplot as plt
+        # plt.imshow(input.cpu().squeeze().permute(1,2,0)) # the permute puts turns (channel width height) to (width, height, channel)
+        normalized_input = input/255
+        x = self.network(normalized_input)
         logit = self.mlp(x.view(input.shape[0], -1))
 
         if self.discrete:
@@ -287,7 +306,8 @@ class Agent():
             # obs_tensor = obs_tensor.to(self.device)
 
             obs = obs.to(self.device) 
-            action, dist = self.sampleAction(obs.unsqueeze(0))
+            # action, dist = self.sampleAction(obs.unsqueeze(0))
+            action, dist = self.sampleAction(obs)
             ac = torch.tensor(action).float()
             ac = ac.to(self.device)
             logProb = self.getLogProb(ac, dist)
@@ -309,23 +329,24 @@ class Agent():
 @db.timer
 def main(args):
 
-    env = gym.make(args.env_name) 
+    env = gym.vector.make(args.env_name, 4) 
     test_env = gym.make(args.env_name)
 
     if args.cnn:
         env = ImgObsWrapper(env)
         test_env = ImgObsWrapper(test_env)
     
-    obs_dim = env.observation_space.shape
+    obs_dim = env.observation_space.shape[1:]
     db.printInfo(f"{obs_dim}")
     isDiscrete = isinstance(env.action_space, gym.spaces.Discrete)
     if isDiscrete:
         action_dim = env.action_space.n
     else:
-        action_dim = env.action_space.shape[0]
+        action_dim = env.action_space[0].shape[0]
+        
 
     print(f"====================")
-    db.printInfo(f"ENV = {env.unwrapped.spec.id}")
+    db.printInfo(f"ENV = {args.env_name}")
     db.printInfo(f"OBS = {obs_dim}")
     db.printInfo(f"AS = {action_dim}")
     db.printInfo(f"Discrete: {isDiscrete}")
@@ -355,7 +376,7 @@ def main(args):
         if i % 10 == 0:
             print(f"\n")
             db.printInfo(f"training iter {i} {avgReward=:.3f}")
-            test(test_env, agent, 1, False, args.eps_length)
+            # test(test_env, agent, 1, False, args.eps_length)
             savePolicy(env.unwrapped.spec.id, agent)
             db.printInfo(f"{G.output_dir=}")
     db.printInfo(f"training iter{i}")
